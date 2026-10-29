@@ -27,7 +27,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var capturePermissionDenied = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // New status items land left of every existing one, which on notched
+        // MacBooks with a full menu bar means hidden behind the notch. Seed a
+        // preferred position near the right edge (points from the right) on
+        // first launch; Cmd-dragging the icon later overrides it.
+        let autosaveName = "UltraXRealStatusItem"
+        UserDefaults.standard.register(defaults: ["NSStatusItem Preferred Position \(autosaveName)": 220.0])
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = autosaveName
 
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "display", accessibilityDescription: "UltraXReal")
