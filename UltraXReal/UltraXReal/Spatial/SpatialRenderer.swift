@@ -32,6 +32,8 @@ final class SpatialRenderer: NSObject, ObservableObject {
     var screenDistanceMeters: Float = 2
     var monitorAngleDegrees: Float = 32
     var monitorGapMeters: Float = 0.025
+    /// Pitch of the whole monitor layout above the recentered gaze, in degrees.
+    var screenElevationDegrees: Float = 0
 
     private var metalDevice: MTLDevice!
     private var commandQueue: MTLCommandQueue!
@@ -431,8 +433,11 @@ extension SpatialRenderer: MTKViewDelegate {
         let state = spatialTracker.presentationState(at: ProcessInfo.processInfo.systemUptime + 0.008)
         let diagonal = max(1, screenDiagonalInches) * 0.0254
         let aspectNorm = Float((16.0 * 16.0 + 9.0 * 9.0).squareRoot())
+        // Raising the monitors by θ is the same as pitching the head down by θ.
+        let elevation = min(60, max(-30, screenElevationDegrees)) * Float.pi / 180
+        let elevate = simd_float3x3(simd_quatf(angle: -elevation, axis: SIMD3<Float>(1, 0, 0)))
         var uniforms = FloatingUniforms(
-            headMatrix: state.headMatrix,
+            headMatrix: elevate * state.headMatrix,
             optics: SIMD4<Float>(0.369, 0.369 * 9 / 16,
                                  diagonal * 8 / aspectNorm, diagonal * 4.5 / aspectNorm),
             layout: SIMD4<Float>(max(0.1, screenDistanceMeters) / max(0.1, Float(state.zoomLevel)),

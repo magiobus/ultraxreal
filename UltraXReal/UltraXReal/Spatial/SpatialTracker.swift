@@ -125,7 +125,9 @@ final class SpatialTracker: ObservableObject {
     /// Reset tracker to center and recenter the IMU reference.
     func recenter() {
         imuService?.recenter()
-        smoothedQuat = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        // Yaw-only recenter leaves pitch/roll in the relative pose; start the
+        // filter there instead of easing in from identity.
+        smoothedQuat = simd_normalize(imuService?.relativeOrientation ?? simd_quatf(ix: 0, iy: 0, iz: 0, r: 1))
         lastRawQuat = smoothedQuat
         anchorQuat = smoothedQuat
         angularSpeed = 0
@@ -136,7 +138,8 @@ final class SpatialTracker: ObservableObject {
         leanVelocity = 0
         accelBias = 0
         debounceRemaining = 0
-        state = SpatialState(headMatrix: matrix_identity_float3x3, zoomLevel: 1.0, isCalibrated: true)
+        let rotNed = simd_float3x3(smoothedQuat)
+        state = SpatialState(headMatrix: viewToNed.transpose * rotNed * viewToNed, zoomLevel: 1.0, isCalibrated: true)
     }
 
     /// One Euro helper: EMA alpha for a given cutoff frequency at our sample rate.

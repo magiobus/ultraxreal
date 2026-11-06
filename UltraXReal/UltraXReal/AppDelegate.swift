@@ -237,6 +237,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         spatialMenu.addItem(gapSliderItem)
 
+        let elevationSliderItem = NSMenuItem()
+        elevationSliderItem.view = SliderMenuItemView(
+            title: "Screen Elevation",
+            min: -30, max: 60,
+            value: settings.screenElevationDegrees,
+            format: { String(format: "%+.0f°", $0) },
+            onChange: { [weak self] value in
+                self?.settings.screenElevationDegrees = value
+                self?.spatialRenderer?.screenElevationDegrees = Float(value)
+            }
+        )
+        elevationSliderItem.view?.toolTip = "Raise the monitors above your recentered gaze, e.g. to float a screen over a laptop."
+        spatialMenu.addItem(elevationSliderItem)
+
         spatialMenu.addItem(NSMenuItem.separator())
 
         // Floating monitor resolution
@@ -452,6 +466,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 renderer.screenDistanceMeters = Float(self.settings.screenDistance)
                 renderer.monitorAngleDegrees = Float(self.settings.monitorAngleDegrees)
                 renderer.monitorGapMeters = Float(self.settings.monitorGapMeters)
+                renderer.screenElevationDegrees = Float(self.settings.screenElevationDegrees)
                 renderer.onFailure = { [weak self] error in
                     guard let self, self.sessionGeneration == token else { return }
                     self.handleCaptureFailure(error)

@@ -57,6 +57,7 @@ final class Settings: ObservableObject {
         static let screenDistance = "floatingScreenDistance"
         static let monitorAngle = "floatingMonitorAngleDegrees"
         static let monitorGap = "floatingMonitorGapMeters"
+        static let screenElevation = "floatingScreenElevationDegrees"
         static let spatialResolution = "spatialResolution"
         static let followMode = "followModeEnabled"
         static let monitorCount = "spatialMonitorCount"
@@ -110,6 +111,11 @@ final class Settings: ObservableObject {
         didSet { defaults.set(monitorGapMeters, forKey: Keys.monitorGap) }
     }
 
+    /// Degrees above (positive) or below the recentered, horizon-level gaze.
+    @Published var screenElevationDegrees: Double {
+        didSet { defaults.set(screenElevationDegrees, forKey: Keys.screenElevation) }
+    }
+
     @Published var spatialResolution: SpatialResolution {
         didSet { defaults.set(spatialResolution.rawValue, forKey: Keys.spatialResolution) }
     }
@@ -148,6 +154,8 @@ final class Settings: ObservableObject {
         self.monitorAngleDegrees = angle.isFinite ? min(75, max(0, angle)) : 32
         let gap = defaults.object(forKey: Keys.monitorGap) as? Double ?? 0.025
         self.monitorGapMeters = gap.isFinite ? min(1, max(0, gap)) : 0.025
+        let elevation = defaults.object(forKey: Keys.screenElevation) as? Double ?? 0
+        self.screenElevationDegrees = elevation.isFinite ? min(60, max(-30, elevation)) : 0
 
         let resRawSpatial = defaults.string(forKey: Keys.spatialResolution) ?? SpatialResolution.fhd1080.rawValue
         self.spatialResolution = SpatialResolution(rawValue: resRawSpatial) ?? .fhd1080
