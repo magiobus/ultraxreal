@@ -25,6 +25,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var permissionTimer: Timer?
     private var requestedCapturePermission = false
     private var capturePermissionDenied = false
+    private var outputRetries = 0
+    private var retryNotBefore: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // New status items land left of every existing one, which on notched
@@ -415,6 +417,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startSpatialSessionIfPossible() {
         guard spatialRequested, !sleeping, sessionPhase == .idle else { return }
+        if let retryNotBefore, retryNotBefore > Date() {
+            let delay = retryNotBefore.timeIntervalSinceNow
+            self.retryNotBefore = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.startSpatialSessionIfPossible()
+            }
+            return
+        }
         guard CGPreflightScreenCaptureAccess(), !capturePermissionDenied else {
             waitForCapturePermission()
             return
@@ -433,8 +443,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Drain even an unpublished static startup before reusing display serials.
         displayManager.disable { [weak self] in
-            guard let self, self.sessionGeneration == token else { return }
-            self.createSpatialSession(outputID: outputID, token: token)
+            // WindowServer sometimes leaves a monitor created right after a
+            // removal offline for many seconds; let the topology settle first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, self.sessionGeneration == token else { return }
+                self.createSpatialSession(outputID: outputID, token: token)
+            }
         }
         buildMenu()
     }
@@ -472,16 +486,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.handleCaptureFailure(error)
                 }
                 self.spatialRenderer = renderer
-                imu.start()
+                // Open the glasses' USB HID only once the display topology has
+                // settled: doing it mid-reconfiguration has dropped their video.
                 renderer.start { [weak self] result in
                     guard let self, self.sessionGeneration == token, self.spatialRequested else { return }
                     switch result {
                     case .success:
-                        guard self.displayManager.routeSpatialDesktop(viewerID: outputID) else {
+                        imu.start()
+                        guard self.displayManager.routeSpatialDesktop(viewerID: renderer.outputDisplayID) else {
                             self.failSpatialSession("Could not keep the glasses viewer outside the desktop pointer path.")
                             return
                         }
                         self.sessionPhase = .running
+                        self.outputRetries = 0
                         self.applyMainMonitor()
                         self.warpCursorToVirtualDisplay()
                         self.updateIcon()
@@ -529,6 +546,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if capturePermissionDenied || !CGPreflightScreenCaptureAccess() {
             // Keep the user's requested session across TCC approval/relaunch.
+            stopSpatialSession()
+        } else if case SpatialRendererError.outputDisplayNotFound = error, outputRetries < 3 {
+            // The glasses often re-enumerate while the virtual monitors are
+            // created. Keep the request and retry once the topology settles.
+            outputRetries += 1
+            NSLog("Glasses display vanished; retry %d", outputRetries)
+            retryNotBefore = Date().addingTimeInterval(2)
             stopSpatialSession()
         } else {
             failSpatialSession(error.localizedDescription)

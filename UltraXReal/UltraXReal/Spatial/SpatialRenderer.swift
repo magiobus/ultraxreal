@@ -24,7 +24,8 @@ final class SpatialRenderer: NSObject, ObservableObject {
     var onFailure: ((Error) -> Void)?
 
     private let virtualDisplayIDs: [CGDirectDisplayID]
-    private let outputDisplayID: CGDirectDisplayID
+    /// The glasses display. Re-resolved when the ID changes after re-enumeration.
+    private(set) var outputDisplayID: CGDirectDisplayID
     private let spatialTracker: SpatialTracker
     let canvasWidth: Int
     let canvasHeight: Int
@@ -55,6 +56,7 @@ final class SpatialRenderer: NSObject, ObservableObject {
     private var frameCount = 0
     private var fpsTimer: Timer?
     private var screenObserver: NSObjectProtocol?
+    private var missingOutputCheck: DispatchWorkItem?
 
     init(virtualDisplayIDs: [CGDirectDisplayID], outputDisplayID: CGDirectDisplayID,
          spatialTracker: SpatialTracker, canvasWidth: Int, canvasHeight: Int) {
@@ -102,16 +104,37 @@ final class SpatialRenderer: NSObject, ObservableObject {
             completion(.failure(SpatialRendererError.metalSetupFailed))
             return
         }
-        guard setupOutputWindow() else {
-            completion(.failure(SpatialRendererError.outputDisplayNotFound))
-            return
-        }
         generation &+= 1
         let token = generation
         startupFailure = nil
-        observeOutputDisplay(generation: token)
         startupTask = Task { @MainActor in
             do {
+                // NSScreen lags CoreGraphics after the virtual monitors appear, and the
+                // glasses can re-enumerate during the topology change. Give them a moment.
+                var attempts = 0
+                while !outputScreenAvailable(), attempts < 60 {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                    try checkStartup(token)
+                    attempts += 1
+                    if attempts % 10 == 0 {
+                        var ids = [CGDirectDisplayID](repeating: 0, count: 16); var n: UInt32 = 0
+                        CGGetOnlineDisplayList(16, &ids, &n)
+                        let desc = ids.prefix(Int(n)).map { "\($0):active=\(CGDisplayIsActive($0)) mirrorOf=\(CGDisplayMirrorsDisplay($0)) asleep=\(CGDisplayIsAsleep($0)) online=\(CGDisplayIsOnline($0)) \(CGDisplayPixelsWide($0))x\(CGDisplayPixelsHigh($0))" }
+                        NSLog("Waiting for glasses %u; CG: %@; NSScreens: %@", outputDisplayID, desc.joined(separator: " | "),
+                              NSScreen.screens.map { "\($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? "?")" }.joined(separator: ","))
+                    }
+                    if attempts % 10 == 0, let found = DisplayMirrorHelper.findXRealDisplay(excludingDisplayID: nil),
+                       !virtualDisplayIDs.contains(found), found != outputDisplayID {
+                        NSLog("Glasses display re-enumerated: %u -> %u", outputDisplayID, found)
+                        outputDisplayID = found
+                    }
+                }
+                guard setupOutputWindow() else {
+                    let screens = NSScreen.screens.map { "\($0.localizedName)=\($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? "?")" }
+                    NSLog("Output display %u missing; screens: %@", outputDisplayID, screens.joined(separator: ", "))
+                    throw SpatialRendererError.outputDisplayNotFound
+                }
+                observeOutputDisplay(generation: token)
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
                 try checkStartup(token)
                 for (slot, displayID) in virtualDisplayIDs.enumerated() {
@@ -184,6 +207,8 @@ final class SpatialRenderer: NSObject, ObservableObject {
     private func tearDownOutput() {
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
+        missingOutputCheck?.cancel()
+        missingOutputCheck = nil
         fpsTimer?.invalidate()
         fpsTimer = nil
         metalView?.isPaused = true
@@ -193,30 +218,55 @@ final class SpatialRenderer: NSObject, ObservableObject {
         metalView = nil
     }
 
+    private func outputScreen() -> NSScreen? {
+        NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == outputDisplayID
+        })
+    }
+
+    private func outputScreenAvailable() -> Bool { outputScreen() != nil }
+
     private func observeOutputDisplay(generation token: UInt64) {
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main
         ) { [weak self] _ in
             guard let self, self.generation == token, !self.isStopping else { return }
-            guard let screen = NSScreen.screens.first(where: {
-                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == self.outputDisplayID
-            }) else {
-                let error = SpatialRendererError.outputDisplayNotFound
-                if self.startupTask != nil {
-                    self.startupFailure = error
-                } else if self.isRunning {
-                    self.stop { [weak self] in
-                        guard let self, self.generation == token &+ 1, !self.isStopping else { return }
-                        self.onFailure?(error)
+            guard let screen = self.outputScreen() else {
+                // Topology changes make the glasses vanish for a moment; only
+                // give up if they are still gone after a grace period.
+                guard self.missingOutputCheck == nil else { return }
+                let check = DispatchWorkItem { [weak self] in
+                    guard let self, self.generation == token, !self.isStopping else { return }
+                    self.missingOutputCheck = nil
+                    if let screen = self.outputScreen() {
+                        self.applyOutputFrame(screen)
+                        return
+                    }
+                    let error = SpatialRendererError.outputDisplayNotFound
+                    if self.startupTask != nil {
+                        self.startupFailure = error
+                    } else if self.isRunning {
+                        self.stop { [weak self] in
+                            guard let self, self.generation == token &+ 1, !self.isStopping else { return }
+                            self.onFailure?(error)
+                        }
                     }
                 }
+                self.missingOutputCheck = check
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: check)
                 return
             }
-            self.outputWindow?.setFrame(screen.frame, display: true)
-            self.metalView?.frame = CGRect(origin: .zero, size: screen.frame.size)
-            self.metalView?.layer?.contentsScale = max(1, screen.backingScaleFactor)
+            self.missingOutputCheck?.cancel()
+            self.missingOutputCheck = nil
+            self.applyOutputFrame(screen)
         }
+    }
+
+    private func applyOutputFrame(_ screen: NSScreen) {
+        self.outputWindow?.setFrame(screen.frame, display: true)
+        self.metalView?.frame = CGRect(origin: .zero, size: screen.frame.size)
+        self.metalView?.layer?.contentsScale = max(1, screen.backingScaleFactor)
     }
 
     private func register(_ stream: SCStream, slot: Int) {

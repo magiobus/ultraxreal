@@ -79,8 +79,8 @@ final class VirtualDisplayManager: ObservableObject {
         }
         let names = count == 1 ? ["Center"] : count == 2 ? ["Left", "Right"] : ["Left", "Center", "Right"]
         let specifications = names.map { name in
-            Specification(name: "UltraXReal \(name)", product: 0x567A,
-                          serial: name == "Left" ? 10 : name == "Center" ? 11 : 12,
+            Specification(name: "UltraXReal \(name)", product: 0x567C,
+                          serial: name == "Left" ? 20 : name == "Center" ? 21 : 22,
                           width: width, height: height, refreshRate: 60,
                           size: CGSize(width: 1194, height: 672))
         }
@@ -132,16 +132,23 @@ final class VirtualDisplayManager: ObservableObject {
         let startX = bounds.map(\.maxX).max() ?? 0
         var configuration: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&configuration) == .success, let configuration else { return false }
-        var x = startX
+        // One floating monitor sits above the laptop in the glasses, so put it
+        // above the anchor display in the desktop too: the pointer moves up into it.
+        let anchorBounds = CGDisplayBounds(anchor)
+        let totalWidth = spatialDisplayIDs.map { CGDisplayBounds($0).width }.reduce(0, +)
+        let maxHeight = spatialDisplayIDs.map { CGDisplayBounds($0).height }.max() ?? 0
+        let above = spatialDisplayIDs.count == 1
+        var x = above ? (anchorBounds.midX - totalWidth / 2).rounded() : startX
+        let y = above ? anchorBounds.minY - maxHeight : anchorOrigin.y
         for id in spatialDisplayIDs {
-            guard CGConfigureDisplayOrigin(configuration, id, Int32(x), Int32(anchorOrigin.y)) == .success else {
+            guard CGConfigureDisplayOrigin(configuration, id, Int32(x), Int32(y)) == .success else {
                 CGCancelDisplayConfiguration(configuration)
                 return false
             }
             x += CGDisplayBounds(id).width
         }
         // A disconnected output has no shared edge through which the pointer can travel.
-        let parkedY = (bounds.map(\.minY).min() ?? 0) - CGDisplayBounds(viewerID).height - 4096
+        let parkedY = min(bounds.map(\.minY).min() ?? 0, y) - CGDisplayBounds(viewerID).height - 4096
         guard CGConfigureDisplayOrigin(configuration, viewerID, Int32(anchorOrigin.x), Int32(parkedY)) == .success else {
             CGCancelDisplayConfiguration(configuration)
             return false
@@ -312,27 +319,43 @@ final class VirtualDisplayManager: ObservableObject {
                 return nativeMode != nil
             }
             guard available, let native = nativeMode else {
+                let listed = (CGDisplayCopyAllDisplayModes(display.displayID, options) as? [CGDisplayMode])?
+                    .map { "\($0.width)x\($0.height)@\($0.pixelWidth)x\($0.pixelHeight)" }.joined(separator: ",") ?? "none"
+                NSLog("Display %u (%@): online=%d modes=%@", display.displayID, specification.name, CGDisplayIsOnline(display.displayID), listed)
                 throw DisplayError.failed("Native 1× mode unavailable for \(specification.name).")
             }
             return native
         }
+        // Phase 1: select the native mode only, exactly like the static display
+        // does. Unmirroring and positioning in the same transaction has left the
+        // virtual monitor offline or kicked the glasses display off the bus.
+        try Self.commitConfiguration("select native display mode") { configuration in
+            for index in displays.indices {
+                guard CGConfigureDisplayWithDisplayMode(configuration, displays[index].displayID, modes[index], nil) == .success else {
+                    throw DisplayError.failed("Failed to select native display mode.")
+                }
+            }
+        }
+        let modesReady = Self.waitForDisplayChange {
+            displays.indices.allSatisfy { index in
+                guard let mode = CGDisplayCopyDisplayMode(displays[index].displayID) else { return false }
+                return Self.matches(mode, specifications[index])
+            }
+        }
+        guard modesReady else {
+            throw DisplayError.failed("The virtual monitor did not switch to its native mode.")
+        }
+        guard arrange else { return }
+
+        // Phase 2: lay the monitors out left to right beyond the physical displays.
         let groupIDs = Set(displays.map(\.displayID))
         let existingBounds = Self.onlineDisplayIDs().filter { !groupIDs.contains($0) }.map { CGDisplayBounds($0) }
         let startX = Int32(existingBounds.map(\.maxX).max() ?? 0)
         let startY = Int32(CGDisplayBounds(CGMainDisplayID()).minY)
-        var configuration: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&configuration) == .success, let configuration else {
-            throw DisplayError.failed("Failed to begin display configuration.")
-        }
-        var completed = false
-        defer { if !completed { CGCancelDisplayConfiguration(configuration) } }
-        var offset: Int32 = 0
-        for index in displays.indices {
-            let id = displays[index].displayID
-            guard CGConfigureDisplayWithDisplayMode(configuration, id, modes[index], nil) == .success else {
-                throw DisplayError.failed("Failed to select native display mode.")
-            }
-            if arrange {
+        try Self.commitConfiguration("arrange spatial monitors") { configuration in
+            var offset: Int32 = 0
+            for index in displays.indices {
+                let id = displays[index].displayID
                 guard CGConfigureDisplayMirrorOfDisplay(configuration, id, 0) == .success,
                       CGConfigureDisplayOrigin(configuration, id, startX + offset, startY) == .success else {
                     throw DisplayError.failed("Failed to arrange spatial monitors.")
@@ -340,19 +363,14 @@ final class VirtualDisplayManager: ObservableObject {
                 offset += Int32(specifications[index].width)
             }
         }
-        let result = CGCompleteDisplayConfiguration(configuration, .forSession)
-        completed = true
-        guard result == .success else { throw DisplayError.failed("Failed to commit display configuration.") }
         let ready = Self.waitForDisplayChange {
             var expectedOffset: Int32 = 0
             for index in displays.indices {
                 let id = displays[index].displayID
                 guard let mode = CGDisplayCopyDisplayMode(id), Self.matches(mode, specifications[index]) else { return false }
-                if arrange {
-                    guard CGDisplayBounds(id).origin == CGPoint(x: Int(startX + expectedOffset), y: Int(startY)),
-                          CGDisplayIsInMirrorSet(id) == 0 else { return false }
-                    expectedOffset += Int32(specifications[index].width)
-                }
+                guard CGDisplayBounds(id).origin == CGPoint(x: Int(startX + expectedOffset), y: Int(startY)),
+                      CGDisplayIsInMirrorSet(id) == 0 else { return false }
+                expectedOffset += Int32(specifications[index].width)
             }
             return true
         }
@@ -362,9 +380,23 @@ final class VirtualDisplayManager: ObservableObject {
         }
     }
 
+    private static func commitConfiguration(_ what: String, _ body: (CGDisplayConfigRef) throws -> Void) throws {
+        var configuration: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&configuration) == .success, let configuration else {
+            throw DisplayError.failed("Failed to begin display configuration.")
+        }
+        do { try body(configuration) } catch {
+            CGCancelDisplayConfiguration(configuration)
+            throw error
+        }
+        guard CGCompleteDisplayConfiguration(configuration, .forSession) == .success else {
+            throw DisplayError.failed("Failed to \(what).")
+        }
+    }
+
     /// CoreGraphics commits before WindowServer publishes its new topology.
     private static func waitForDisplayChange(_ ready: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(2)
+        let deadline = Date().addingTimeInterval(15)
         repeat {
             if ready() { return true }
             Thread.sleep(forTimeInterval: 0.02)
