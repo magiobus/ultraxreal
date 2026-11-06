@@ -120,15 +120,17 @@ final class XRealIMUService: ObservableObject {
         }
     }
 
-    /// Capture the current heading as the "zero" reference point. Only yaw is
-    /// taken: pitch and roll stay referenced to gravity, so the screen is level
-    /// with the horizon however the head is tilted when recentering.
+    /// Capture where the wearer is looking (heading and pitch) as the "zero"
+    /// reference. Roll is left out, so the screen stays level with the horizon
+    /// even if the head is tilted sideways when recentering.
     func recenter() {
-        // NED frame: x forward, y east, z down. Yaw is rotation about z.
-        let q = orientation
-        let yaw = atan2(2 * (q.real * q.imag.z + q.imag.x * q.imag.y),
-                        1 - 2 * (q.imag.y * q.imag.y + q.imag.z * q.imag.z))
+        // NED frame: x forward, y east, z down. ZYX Euler: yaw about z, pitch about y.
+        let q = simd_normalize(orientation)
+        let w = q.real, x = q.imag.x, y = q.imag.y, z = q.imag.z
+        let yaw = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+        let pitch = asin(max(-1, min(1, 2 * (w * y - z * x))))
         referenceQuat = simd_quatf(angle: yaw, axis: SIMD3<Float>(0, 0, 1))
+            * simd_quatf(angle: pitch, axis: SIMD3<Float>(0, 1, 0))
         hasReference = true
     }
 

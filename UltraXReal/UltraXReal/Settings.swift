@@ -111,7 +111,7 @@ final class Settings: ObservableObject {
         didSet { defaults.set(monitorGapMeters, forKey: Keys.monitorGap) }
     }
 
-    /// Degrees above (positive) or below the recentered, horizon-level gaze.
+    /// Degrees above (positive) or below (negative) the recentered gaze.
     @Published var screenElevationDegrees: Double {
         didSet { defaults.set(screenElevationDegrees, forKey: Keys.screenElevation) }
     }
@@ -155,7 +155,7 @@ final class Settings: ObservableObject {
         let gap = defaults.object(forKey: Keys.monitorGap) as? Double ?? 0.025
         self.monitorGapMeters = gap.isFinite ? min(1, max(0, gap)) : 0.025
         let elevation = defaults.object(forKey: Keys.screenElevation) as? Double ?? 0
-        self.screenElevationDegrees = elevation.isFinite ? min(60, max(-30, elevation)) : 0
+        self.screenElevationDegrees = elevation.isFinite ? min(60, max(-60, elevation)) : 0
 
         let resRawSpatial = defaults.string(forKey: Keys.spatialResolution) ?? SpatialResolution.fhd1080.rawValue
         self.spatialResolution = SpatialResolution(rawValue: resRawSpatial) ?? .fhd1080

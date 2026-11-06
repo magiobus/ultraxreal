@@ -189,7 +189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sizeSliderItem = NSMenuItem()
         sizeSliderItem.view = SliderMenuItemView(
             title: "Screen Size",
-            min: 32, max: 150,
+            min: 10, max: 150,
             value: settings.screenInches,
             format: { String(format: "%.0f\"", $0) },
             onChange: { [weak self] value in
@@ -242,7 +242,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let elevationSliderItem = NSMenuItem()
         elevationSliderItem.view = SliderMenuItemView(
             title: "Screen Elevation",
-            min: -30, max: 60,
+            min: -60, max: 60,
             value: settings.screenElevationDegrees,
             format: { String(format: "%+.0f°", $0) },
             onChange: { [weak self] value in
@@ -250,7 +250,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.spatialRenderer?.screenElevationDegrees = Float(value)
             }
         )
-        elevationSliderItem.view?.toolTip = "Raise the monitors above your recentered gaze, e.g. to float a screen over a laptop."
+        elevationSliderItem.view?.toolTip = "0° is where you looked when recentering. Raise to float the screen over the laptop, lower to bring it down."
         spatialMenu.addItem(elevationSliderItem)
 
         spatialMenu.addItem(NSMenuItem.separator())
