@@ -668,7 +668,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard isSpatialActive, let imu = imuService, !imu.isCalibrating else { return }
         let prompt = NSAlert()
         prompt.messageText = "Calibrate Gyroscope"
-        prompt.informativeText = "Rest the glasses on a stable surface. Keep them completely still for two seconds after starting. The correction is saved for these glasses."
+        prompt.informativeText = "Rest the glasses on a stable surface. Keep them still for about three seconds after starting. The correction is saved for these glasses."
         prompt.addButton(withTitle: "Start Calibration")
         prompt.addButton(withTitle: "Cancel")
         guard prompt.runModal() == .alertFirstButtonReturn else { return }

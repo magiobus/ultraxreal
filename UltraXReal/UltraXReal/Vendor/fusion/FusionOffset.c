@@ -35,6 +35,12 @@
 // without an external heading reference.
 #define REFINEMENT_THRESHOLD (0.25f)
 #define STATIONARY_PERIOD (2.0f)
+
+// Explicit calibration: collect this many seconds, allow per-sample noise up to
+// 0.3 dps standard deviation, and require both halves to agree within 0.05 dps.
+#define CALIBRATION_PERIOD (3)
+#define CALIBRATION_MAX_VARIANCE (0.09f)
+#define CALIBRATION_MAX_HALF_DIFFERENCE (0.05f)
 #define ACCELERATION_CHANGE (0.015f)
 #define GYROSCOPE_VARIANCE (0.01f)
 #define MOTION_FILTER_TIME_CONSTANT (0.05f)
@@ -75,6 +81,7 @@ void FusionOffsetBeginCalibration(FusionOffset *const offset) {
     offset->calibrationSamples = 0;
     offset->calibrationMean = FUSION_VECTOR_ZERO;
     offset->calibrationM2 = FUSION_VECTOR_ZERO;
+    offset->calibrationHalfMean = FUSION_VECTOR_ZERO;
     offset->calibrationState = FusionOffsetCalibrationCollecting;
 }
 
@@ -127,13 +134,24 @@ FusionVector FusionOffsetUpdateWithAcceleration(FusionOffset *const offset, Fusi
             offset->calibrationMean.array[axis] += delta / offset->calibrationSamples;
             offset->calibrationM2.array[axis] += delta * (value - offset->calibrationMean.array[axis]);
         }
+        const unsigned int total = CALIBRATION_PERIOD * offset->sampleRate;
         if (offset->calibrationState == FusionOffsetCalibrationCollecting &&
-            offset->calibrationSamples >= 2 * offset->sampleRate) {
+            offset->calibrationSamples == total / 2) {
+            offset->calibrationHalfMean = offset->calibrationMean;
+        }
+        if (offset->calibrationState == FusionOffsetCalibrationCollecting &&
+            offset->calibrationSamples >= total) {
+            // Judge stillness by whether the bias estimate is stable, not by
+            // per-sample noise: some units read 0.1-0.15 dps of white noise at
+            // rest, which averages out over thousands of samples. Slow motion
+            // or a settling sensor shows up as a different mean per half.
             bool still = true;
             for (unsigned int axis = 0; axis < 3; axis++) {
-                // Reject variance above (0.08 degrees/second)^2.
-                still = still && offset->calibrationM2.array[axis] /
-                    (offset->calibrationSamples - 1) < 0.0064f;
+                const float variance = offset->calibrationM2.array[axis] / (offset->calibrationSamples - 1);
+                const float firstHalf = offset->calibrationHalfMean.array[axis];
+                const float secondHalf = 2 * offset->calibrationMean.array[axis] - firstHalf;
+                still = still && variance < CALIBRATION_MAX_VARIANCE &&
+                    fabsf(secondHalf - firstHalf) < CALIBRATION_MAX_HALF_DIFFERENCE;
             }
             if (still) {
                 FusionOffsetSetBias(offset, offset->calibrationMean.axis.x,

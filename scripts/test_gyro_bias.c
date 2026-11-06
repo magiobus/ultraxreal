@@ -106,7 +106,7 @@ static void explicitCalibration(void) {
     FusionOffset offset;
     FusionOffsetInitialise(&offset, 1000);
     FusionOffsetBeginCalibration(&offset);
-    for (int i = 0; i < 2000; i++) {
+    for (int i = 0; i < 3000; i++) {
         FusionOffsetUpdateWithAcceleration(&offset, vector(0.2f, -0.3f, 0.7f), gravity, 0.001f);
     }
     assert(FusionOffsetGetCalibrationState(&offset) == FusionOffsetCalibrationComplete);
@@ -114,6 +114,32 @@ static void explicitCalibration(void) {
     FusionOffsetBeginCalibration(&offset);
     FusionOffsetUpdateWithAcceleration(&offset, vector(0, 0, 5), gravity, 0.001f);
     assert(FusionOffsetGetCalibrationState(&offset) == FusionOffsetCalibrationMoved);
+
+    // A noisy unit at rest (about 0.13 dps of noise) must still calibrate.
+    FusionOffsetBeginCalibration(&offset);
+    uint32_t seed = 12345;
+    for (int i = 0; i < 3000; i++) {
+        float noise[3];
+        for (int axis = 0; axis < 3; axis++) {
+            float sum = 0;
+            for (int k = 0; k < 4; k++) {
+                seed = seed * 1664525u + 1013904223u;
+                sum += (float)(seed >> 8) / (float)(1u << 24) - 0.5f;
+            }
+            noise[axis] = sum * 0.225f; // ~0.13 dps standard deviation
+        }
+        FusionOffsetUpdateWithAcceleration(&offset, vector(0.1f + noise[0], noise[1], -0.4f + noise[2]), gravity, 0.001f);
+    }
+    assert(FusionOffsetGetCalibrationState(&offset) == FusionOffsetCalibrationComplete);
+    assert(fabsf(FusionOffsetGetBias(&offset).axis.z + 0.4f) < 0.02f);
+
+    // A slow turn under the per-sample threshold must be rejected.
+    FusionOffsetBeginCalibration(&offset);
+    for (int i = 0; i < 3000; i++) {
+        FusionOffsetUpdateWithAcceleration(&offset, vector(0, 0, 0.5f * i / 3000.0f), gravity, 0.001f);
+    }
+    assert(FusionOffsetGetCalibrationState(&offset) == FusionOffsetCalibrationMoved);
+    printf("Explicit calibration: noisy rest accepted, slow turn rejected\n");
 }
 
 int main(void) {

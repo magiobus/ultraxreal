@@ -196,7 +196,7 @@ final class XRealIMUService: ObservableObject {
             }
             if let requestID, requestID != calibrationID, let rawOffset = dev.pointee.offset {
                 calibrationID = requestID
-                calibrationDeadline = ProcessInfo.processInfo.systemUptime + 5
+                calibrationDeadline = ProcessInfo.processInfo.systemUptime + 8
                 FusionOffsetBeginCalibration(rawOffset.assumingMemoryBound(to: FusionOffset.self))
             }
             let err = device_imu_read(dev, 16) // 16ms timeout ≈ 60Hz

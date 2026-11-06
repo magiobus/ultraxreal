@@ -363,16 +363,14 @@ final class VirtualDisplayManager: ObservableObject {
                 offset += Int32(specifications[index].width)
             }
         }
+        // WindowServer snaps displays to shared edges, so the exact origin may
+        // differ; the final layout is applied later by routeSpatialDesktop.
         let ready = Self.waitForDisplayChange {
-            var expectedOffset: Int32 = 0
-            for index in displays.indices {
+            displays.indices.allSatisfy { index in
                 let id = displays[index].displayID
                 guard let mode = CGDisplayCopyDisplayMode(id), Self.matches(mode, specifications[index]) else { return false }
-                guard CGDisplayBounds(id).origin == CGPoint(x: Int(startX + expectedOffset), y: Int(startY)),
-                      CGDisplayIsInMirrorSet(id) == 0 else { return false }
-                expectedOffset += Int32(specifications[index].width)
+                return CGDisplayIsInMirrorSet(id) == 0
             }
-            return true
         }
         guard ready else {
             let actual = displays.map { "\($0.displayID): \(CGDisplayBounds($0.displayID)) mirrored=\(CGDisplayIsInMirrorSet($0.displayID))" }.joined(separator: "; ")

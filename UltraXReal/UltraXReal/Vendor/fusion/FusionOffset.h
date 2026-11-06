@@ -36,6 +36,7 @@ typedef struct {
     unsigned int calibrationSamples;
     FusionVector calibrationMean;
     FusionVector calibrationM2;
+    FusionVector calibrationHalfMean;
     FusionOffsetCalibrationState calibrationState;
     bool manualBias;
     float stationaryElapsed;
